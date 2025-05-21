@@ -102,6 +102,7 @@
         // if (mutlirandomwordclock){
         //   section.innerHTML = "<p>" + answer + "</p>" + section.innerHTML;
         // }
+        //
 
 
         // Handle cloze dropdowns
