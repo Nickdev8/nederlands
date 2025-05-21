@@ -1,0 +1,8 @@
+{
+    "answer1": "this always is a string",
+    "answer2": "this always is a string",
+    "answer3": "this always is a string",
+    "answer4": [
+        "1", "2"
+    ]
+}
