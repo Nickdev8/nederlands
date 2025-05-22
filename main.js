@@ -54,7 +54,7 @@
         answersObj = JSON.parse(raw);
         console.log("Parsed answers object:", answersObj);
       } catch (err) {
-        console.error("Error parsing JSON:", err, raw);
+        console.error("Error parsing JSON — aborting:", err, raw);
         return;
       }
 
@@ -65,121 +65,144 @@
       const useGenericKey = sections.length <= 2;
 
       sections.forEach((section, idx) => {
-        console.log(`\n--- Processing section ${idx + 1} ---`);
-        // Determine the question key
-        let key = 'a';
-        if (!useGenericKey) {
-          const kEl = section.querySelector("p.instruction > span");
-          if (!kEl) {
-            console.log(`Section ${idx + 1}: no key found, skipping.`);
+        try {
+          console.log(`\n--- Processing section ${idx + 1} ---`);
+          // Determine the question key
+          let key = 'a';
+          if (!useGenericKey) {
+            const kEl = section.querySelector("p.instruction > span");
+            if (!kEl) {
+              console.warn(`Section ${idx + 1}: no key span found, skipping.`);
+              return;
+            }
+            key = kEl.textContent.trim();
+          }
+          console.log(`Using key "${key}"`);
+
+          const answer = answersObj[key];
+          if (answer === undefined) {
+            console.warn(`No answer for key "${key}", skipping section.`);
             return;
           }
-          key = kEl.textContent.trim();
-        }
-        console.log(`Using key "${key}"`);
 
-        let answer = answersObj[key];
-        console.log(`Raw answer for "${key}":`, answer);
-        const answerType = Array.isArray(answer) ? 'array' : typeof answer;
-        console.log(`Answer type for "${key}":`, answerType);
-
-        section.querySelector("p.instruction > span").textContent = answer + " " + key;
-
-        // Handle open-ended questions (textarea)
-        const openQ = section.querySelector("span > eb-editing > div > textarea");
-        if (openQ) {
-          console.log(`→ [open-ended] injecting into textarea`);
-          if (Array.isArray(answer)) {
-            openQ.value = answer.join(', ');
-            console.log(`Injected array into textarea: "${openQ.value}"`);
+          // Try to inject into the instruction span, but don't abort if it's missing
+          const instrSpan = section.querySelector("p.instruction > span");
+          if (instrSpan) {
+            instrSpan.textContent = answer;
           } else {
-            openQ.value = String(answer);
-            console.log(`Injected text into textarea: "${openQ.value}"`);
+            console.warn(`Section ${idx + 1}: missing <span> to set textContent; continuing.`);
           }
-          return;
-        }
-        // const mutlirandomwordclock = section.querySelectorAll("eb-cloze-content-block > eb-cloze-container.eb-id > p > eb-cloze-renderer");
-        // if (mutlirandomwordclock){
-        //   section.innerHTML = "<p>" + answer + "</p>" + section.innerHTML;
-        // }
-        //
 
+          // Handle open-ended questions (textarea)
+          const openQ = section.querySelector("span > eb-editing > div > textarea");
+          if (openQ) {
+            console.log(`→ [open-ended] injecting into textarea`);
+            openQ.value = Array.isArray(answer) ? answer.join(', ') : String(answer);
+            return;
+          }
 
-        // Handle cloze dropdowns
-        const clozes = section.querySelectorAll("eb-cloze-content-block > eb-cloze-container > p > eb-cloze-renderer");
-        if (clozes.length) {
-          console.log(`→ [cloze] setting ${clozes.length} dropdown(s)`);
-          const parts = Array.isArray(answer) ? answer : splitCommaSeparated(String(answer));
-          console.log(`Cloze parts array:`, parts);
-          let offset = 0;
-          clozes.forEach((renderer, i) => {
-            const drop = renderer.querySelector("eb-cloze-drop > eb-select > span > span.eb-value > span");
-            if (drop) {
-              const text = parts[i - offset] || "";
-              drop.innerHTML = text;
-              console.log(` Set dropdown[${i}] = "${text}"`);
-            } else {
-              offset++;
-            }
-          });
-          return;
-        }
+          // NEW: handle multi-line “select sentences” questions
+          //   but *only* if there are eb-cloze-id’s and *no* eb-cloze-drop’s
+          const instrList = section.querySelector("p.instruction span.eb-instruction-number");
+          const clozeIds = section.querySelectorAll("eb-cloze-id");
+          const hasDrops = !!section.querySelector("eb-cloze-drop");
+          if (instrList && clozeIds.length && !hasDrops) {
+            console.log(`→ [multi-line select] for section ${idx + 1}`);
+            console.log("  Instruction list:", instrList.textContent.trim());
 
-        // Handle checkboxes (multiple answers)
-        if (section.querySelector("eb-choice-list ul li.eb-choice input[type='checkbox']")) {
-          console.log(`→ [checkbox] trying multiple answers for "${key}"`);
-          const ul = section.querySelector("eb-choice-list ul");
-          const answersArr = Array.isArray(answer) ? answer : splitCommaSeparated(String(answer));
-          console.log(`Answers array:`, answersArr);
+            const parts = Array.isArray(answer)
+              ? answer
+              : splitCommaSeparated(String(answer));
+            console.log("  Answer parts:", parts);
 
-          let matchedSomething = false;
-          ul.querySelectorAll("li.eb-choice").forEach((opt, i) => {
-            const txt = opt.textContent.trim().toLowerCase();
-            const match = answersArr.some(ans => {
-              const a = ans.toLowerCase();
-              return a === txt || isFuzzyMatch(a, txt);
+            clozeIds.forEach((idEl, i) => {
+              const textEl = idEl.querySelector("span.eb-value");
+              const text = textEl ? textEl.textContent.trim() : "";
+              console.log(`    [${i}] option:`, text);
+
+              const match = parts.some(part =>
+                part === text ||
+                isFuzzyMatch(part.toLowerCase(), text.toLowerCase())
+              );
+              console.log(`      → match?`, match);
+
+              const choiceSpan = idEl.querySelector("span.eb-choice");
+              if (choiceSpan) choiceSpan.classList.toggle("eb-selected", match);
+
+              idEl.classList.toggle("ng-valid", match);
+              idEl.classList.toggle("ng-invalid", !match);
             });
-            console.log(` Option[${i}] "${txt}" match?`, match);
-            if (match) {
-              const cb = opt.querySelector("input[type='checkbox']");
-              if (cb) {
+
+            console.log("  Done multi-line select for section", idx + 1);
+            return;
+          }
+
+          // Handle cloze dropdowns
+          const clozes = section.querySelectorAll("eb-cloze-content-block > eb-cloze-container > p > eb-cloze-renderer");
+          if (clozes.length) {
+            console.log(`→ [cloze] setting ${clozes.length} dropdown(s)`);
+            const parts = Array.isArray(answer) ? answer : splitCommaSeparated(String(answer));
+            let offset = 0;
+            clozes.forEach((renderer, i) => {
+              const drop = renderer.querySelector("eb-cloze-drop > eb-select > span > span.eb-value > span");
+              if (drop) {
+                drop.innerHTML = parts[i - offset] || "";
+              } else {
+                offset++;
+              }
+            });
+            return;
+          }
+
+          // Handle checkboxes (multiple answers)
+          if (section.querySelector("eb-choice-list ul li.eb-choice input[type='checkbox']")) {
+            console.log(`→ [checkbox] trying multiple answers for "${key}"`);
+            const ul = section.querySelector("eb-choice-list ul");
+            const answersArr = Array.isArray(answer)
+              ? answer
+              : splitCommaSeparated(String(answer));
+            let matchedSomething = false;
+            ul.querySelectorAll("li.eb-choice").forEach(opt => {
+              const txt = opt.textContent.trim().toLowerCase();
+              const match = answersArr.some(ans => {
+                const a = ans.toLowerCase();
+                return a === txt || isFuzzyMatch(a, txt);
+              });
+              if (match) {
+                const cb = opt.querySelector("input[type='checkbox']");
                 cb.checked = true;
                 cb.dispatchEvent(new Event("change", { bubbles: true }));
-                console.log(`  ✓ Checked "${txt}"`);
                 matchedSomething = true;
               }
+            });
+            if (!matchedSomething) {
+              ul.insertAdjacentHTML(
+                'beforeend',
+                `<li class="eb-choice eb-custom">${answersArr.join(', ')}</li>`
+              );
             }
-          });
-
-          if (!matchedSomething) {
-            const rawText = answersArr.join(', ');
-            ul.insertAdjacentHTML('beforeend', `<li class="eb-choice eb-custom">${rawText}</li>`);
-            console.warn(`⚠️ No matches – appended raw answer: "${rawText}"`);
+            return;
           }
-          return;
-        }
 
-        // Handle radio buttons (single choice)
-        if (section.querySelector("eb-choice-list ul li.eb-choice input[type='radio']")) {
-          console.log(`→ [radio] single-choice for "${key}"`);
-          const desired = String(answer).trim().toLowerCase();
-          console.log(` Desired radio value: "${desired}"`);
-          section.querySelectorAll("eb-choice-list ul li.eb-choice").forEach((opt, i) => {
-            const txt = opt.textContent.trim().toLowerCase();
-            console.log(` Option[${i}] "${txt}"`);
-            if (txt === desired) {
-              const radio = opt.querySelector("input[type='radio']");
-              if (radio) {
+          // Handle radio buttons (single choice)
+          if (section.querySelector("eb-choice-list ul li.eb-choice input[type='radio']")) {
+            console.log(`→ [radio] single-choice for "${key}"`);
+            const desired = String(answer).trim().toLowerCase();
+            section.querySelectorAll("eb-choice-list ul li.eb-choice").forEach(opt => {
+              const txt = opt.textContent.trim().toLowerCase();
+              if (txt === desired) {
+                const radio = opt.querySelector("input[type='radio']");
                 radio.checked = true;
                 radio.dispatchEvent(new Event("change", { bubbles: true }));
-                console.log(`  ✓ Selected "${txt}"`);
               }
-            }
-          });
-          return;
-        }
+            });
+            return;
+          }
 
-        console.log(`No matching input found for key "${key}".`);
+          console.log(`No matching input found for key "${key}".`);
+        } catch (err) {
+          console.error(`Error processing section ${idx + 1}, skipping to next:`, err);
+        }
       });
     } catch (e) {
       console.error('Error during API request:', e);
@@ -200,7 +223,7 @@
       if (/^(audio|video)$/i.test(t)) return;
       if (/Deze student heeft al feedback/i.test(t)) return;
       t = t.replace(/\s+/g, ' ');
-      if (out[out.length-1] === t) return;
+      if (out[out.length - 1] === t) return;
       out.push(t);
     });
     return out.join('\n\n');
@@ -216,7 +239,7 @@
     "\n - If the question is open-ended or single-choice, provide the answer as a simple text string." +
     "\n - For open-ended (textarea) questions, write a detailed, complete answer in one or two full sentences that directly addresses everything the question asks for." +
     "\n - Some answers may contain multiple parts; in those cases, output them as an array of strings." +
-    "\n\n**IMPORTANT EXTRA RULE:**" +
+    "\n\n**IMPORTANT:** If there is **only one** question on the page, output exactly one property **\"a\"** and do **not** invent or include any other keys." +
     "\n - Whenever the answer you receive is a single comma-separated string (e.g. \"foo, bar, baz\") or a repeated phrase with commas, split on commas, strip any leading context, and keep only the actual tokens in order." +
     "\n   • Example: \"kop: ja, opmaak: ja, info: ja\" → [\"ja\",\"ja\",\"ja\"]." +
     "\n\nAdditional rules:" +
